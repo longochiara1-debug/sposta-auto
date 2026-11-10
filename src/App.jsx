@@ -1,6 +1,26 @@
 import React,{useEffect,useMemo,useState} from "react";
 import {AlertTriangle,Bell,Bike,Car,CheckCircle2,ChevronRight,MapPin,Navigation,RefreshCw,Trash2} from "lucide-react";
 import {motion} from "framer-motion";
+import { enableNotifications, notificationStatus, sendTestNotification, syncPushReminders } from "./push.js";
+<section className="section">
+  <div className="card">
+    <h3>Notifiche</h3>
+    {pushStatus !== "enabled" ? (
+      <button className="primary" onClick={async()=>{
+        try { await enableNotifications(); setPushStatus("enabled"); alert("Notifiche attivate"); }
+        catch(e) { alert(e.message); }
+      }}>Attiva notifiche</button>
+    ) : (
+      <>
+        <p className="success">Notifiche attive</p>
+        <button className="secondary" onClick={async()=>{
+          try { await sendTestNotification(); alert("Notifica di prova inviata"); }
+          catch(e) { alert(e.message); }
+        }}>Invia notifica di prova</button>
+      </>
+    )}
+  </div>
+</section>
 const API="/api/amiu", STORE="street-cleaning-v1", CACHE="amiu-cleaning-data";
 const FALLBACK=[
  {area:"Foce",street:"Corso Torino",segment:"da Via Tolemaide a Corso Buenos Aires, ambo i lati",dates:["2026-11-09T08:00","2026-11-23T08:00"],time:"08:00–12:00"},
@@ -27,7 +47,10 @@ export default function App(){
  const [spots,setSpots]=useState(()=>read(STORE,[])),[vehicle,setVehicle]=useState("Auto"),[screen,setScreen]=useState("home"),[address,setAddress]=useState(""),[coords,setCoords]=useState(null),[display,setDisplay]=useState(""),[selected,setSelected]=useState(0),[locating,setLocating]=useState(false),[error,setError]=useState("");
  const cached=read(CACHE),[data,setData]=useState(()=>valid(cached?.items)?cached.items:FALLBACK),[status,setStatus]=useState("loading"),[updated,setUpdated]=useState(cached?.updatedAt||null);
  const found=useMemo(()=>matches(address,data),[address,data]);
- useEffect(()=>localStorage.setItem(STORE,JSON.stringify(spots)),[spots]);
+ const [pushStatus,setPushStatus]=useState("loading");
+useEffect(()=>{ notificationStatus().then(setPushStatus); },[]);
+useEffect(()=>localStorage.setItem(STORE,JSON.stringify(spots)),[spots]);
+ useEffect(()=>{ syncPushReminders(spots).catch(console.error); },[spots]);
  async function refresh(){setStatus("loading");try{const r=await fetch(API,{headers:{Accept:"application/json"}});if(!r.ok)throw Error(`AMIU API ${r.status}`);const p=await r.json(),items=Array.isArray(p)?p:p.items;if(!valid(items))throw Error("Formato non valido");const at=p.updatedAt||new Date().toISOString();setData(items);setUpdated(at);setStatus("live");localStorage.setItem(CACHE,JSON.stringify({items,updatedAt:at}))}catch(e){console.warn(e);const c=read(CACHE);if(valid(c?.items)){setData(c.items);setUpdated(c.updatedAt);setStatus("cached")}else{setData(FALLBACK);setStatus("fallback")}}}
  useEffect(()=>{refresh()},[]);
  function reset(){setAddress("");setCoords(null);setDisplay("");setSelected(0);setError("")}
