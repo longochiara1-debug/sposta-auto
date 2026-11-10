@@ -1,92 +1,222 @@
-const AMIU_URL = "https://www.amiu.genova.it/in-evidenza/cerca-il-tuo-comune/genova/municipio-viii-medio-levante.html";
-const WEEKDAYS = { domenica:0, lunedi:1, martedi:2, mercoledi:3, giovedi:4, venerdi:5, sabato:6 };
+const AMIU_URL =
+  "https://www.amiu.genova.it/in-evidenza/cerca-il-tuo-comune/genova/municipio-viii-medio-levante.html";
 
-function decodeHtml(s="") {
-  const e={nbsp:" ",amp:"&",quot:'"',apos:"'",deg:"°",agrave:"à",egrave:"è",eacute:"é",igrave:"ì",ograve:"ò",ugrave:"ù"};
-  return s.replace(/&([a-z]+);/gi,(m,n)=>e[n.toLowerCase()]??m)
-    .replace(/&#(\d+);/g,(_,n)=>String.fromCodePoint(Number(n)))
-    .replace(/&#x([0-9a-f]+);/gi,(_,n)=>String.fromCodePoint(parseInt(n,16)));
+function json(body, status = 200) {
+  return new Response(JSON.stringify(body, null, 2), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "access-control-allow-origin": "*",
+
+      // Importante durante la diagnosi:
+      // vogliamo dati freschi a ogni chiamata.
+      "cache-control": "no-store",
+    },
+  });
 }
 
-function htmlToLines(html) {
-  return decodeHtml(html
-    .replace(/<script[\s\S]*?<\/script>/gi," ")
-    .replace(/<style[\s\S]*?<\/style>/gi," ")
-    .replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/tr|\/td|\/th|\/strong|\/b)>/gi,"\n")
-    .replace(/<[^>]+>/g," "))
-    .replace(/\r/g,"").split(/\n+/).map(x=>x.replace(/\s+/g," ").trim()).filter(Boolean);
-}
-
-function normalize(s="") {
-  return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g," ").trim();
-}
-
-function parseTime(s) {
-  const m=s.match(/(?:dalle(?: ore)?\s*)?(\d{1,2})[:.](\d{2})\s*(?:alle|fino alle|-|–)\s*(\d{1,2})[:.](\d{2})/i);
-  if(!m) return {start:"08:00",label:"Orario da verificare sul cartello"};
-  const a=`${m[1].padStart(2,"0")}:${m[2]}`, b=`${m[3].padStart(2,"0")}:${m[4]}`;
-  return {start:a,label:`${a}–${b}`};
-}
-
-function parseDates(s,start) {
-  return [...new Set([...s.matchAll(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g)]
-    .map(m=>`${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}T${start}`))];
-}
-
-function parseRecurrence(s) {
-  const m=normalize(s).match(/\b([1-5])\s*(?:°|º|o)?\s*(domenica|lunedi|martedi|mercoledi|giovedi|venerdi|sabato)\b/);
-  return m ? {ordinal:Number(m[1]),weekday:WEEKDAYS[m[2]]} : null;
-}
-
-function splitLocations(header) {
-  const clean=header.replace(/\s+spazzamento meccanizzato\s*:?\s*(?:il)?\s*$/i,"").trim();
-  const areaMatch=clean.match(/^([^,]+),\s*(.+)$/);
-  if(!areaMatch) return [];
-  const area=areaMatch[1].trim(), text=areaMatch[2], out=[];
-  const re=/(?:^|,\s*)(via|corso|piazza|viale|lungomare|salita|discesa)\s+(.+?)(?=,\s*(?:via|corso|piazza|viale|lungomare|salita|discesa)\s+|$)/gi;
-  for(const m of text.matchAll(re)) {
-    const type=m[1][0].toUpperCase()+m[1].slice(1).toLowerCase(), full=m[2].trim();
-    const sm=full.match(/^(.*?)\s*\((.*)\)\s*$/), name=(sm?sm[1]:full).trim();
-    if(name) out.push({area,street:`${type} ${name}`,segment:sm?sm[2].trim():"Tratto indicato da AMIU"});
+function makeSnippet(text, position, radius = 1000) {
+  if (position < 0) {
+    return null;
   }
-  return out;
-}
 
-function extract(html) {
-  const lines=htmlToLines(html), items=[];
-  for(let i=0;i<lines.length;i++) {
-    if(!/spazzamento meccanizzato/i.test(lines[i])) continue;
-    const next=[];
-    for(let j=1;j<=4 && i+j<lines.length;j++) {
-      const c=lines[i+j];
-      if(/spazzamento meccanizzato/i.test(c)) break;
-      next.push(c);
-      if(/\d{1,2}\/\d{1,2}\/\d{4}|\b[1-5]\s*(?:°|º|o)?\s*(?:lunedi|martedi|mercoledi|giovedi|venerdi|sabato|domenica)\b/i.test(normalize(c))) break;
-    }
-    const schedule=next.join(" "), time=parseTime(schedule), dates=parseDates(schedule,time.start), recurrence=parseRecurrence(schedule);
-    if(!dates.length && !recurrence) continue;
-    for(const loc of splitLocations(lines[i])) items.push({...loc,...(dates.length?{dates}:{recurrence}),time:time.label});
-  }
-  return [...new Map(items.map(x=>[JSON.stringify([x.area,x.street,x.segment,x.dates??x.recurrence,x.time]),x])).values()];
-}
+  const start = Math.max(0, position - radius);
+  const end = Math.min(text.length, position + radius);
 
-function json(body,status=200,extra={}) {
-  return new Response(JSON.stringify(body),{status,headers:{"content-type":"application/json; charset=utf-8","access-control-allow-origin":"*","cache-control":"public, max-age=300, s-maxage=21600, stale-while-revalidate=86400",...extra}});
+  return text
+    .slice(start, end)
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export default async function handler(request) {
-  if(request.method==="OPTIONS") return new Response(null,{status:204,headers:{"access-control-allow-origin":"*","access-control-allow-methods":"GET, OPTIONS","access-control-allow-headers":"content-type"}});
-  if(request.method!=="GET") return json({error:"Metodo non consentito"},405,{allow:"GET, OPTIONS"});
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, OPTIONS",
+        "access-control-allow-headers": "content-type",
+      },
+    });
+  }
+
+  if (request.method !== "GET") {
+    return json(
+      {
+        error: "Metodo non consentito",
+      },
+      405
+    );
+  }
+
   try {
-    const response=await fetch(AMIU_URL,{headers:{accept:"text/html,application/xhtml+xml","user-agent":"Mozilla/5.0 (compatible; SpostaAuto/1.0; +https://www.netlify.com/)"},signal:AbortSignal.timeout(15000)});
-    if(!response.ok) throw new Error(`AMIU ha risposto ${response.status}`);
-    const items=extract(await response.text());
-    if(!items.length) throw new Error("Nessun dato di spazzamento riconosciuto: la pagina AMIU potrebbe essere cambiata");
-    return json({source:AMIU_URL,municipality:"Genova VIII Medio Levante",updatedAt:new Date().toISOString(),count:items.length,items});
-  } catch(error) {
-    console.error("Errore aggiornamento AMIU",error);
-    return json({error:"Impossibile aggiornare i dati AMIU",detail:error instanceof Error?error.message:String(error),source:AMIU_URL},502,{"cache-control":"no-store"});
+    const response = await fetch(AMIU_URL, {
+      headers: {
+        accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+
+        "accept-language":
+          "it-IT,it;q=0.9,en;q=0.8",
+
+        "user-agent":
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
+      },
+
+      redirect: "follow",
+
+      signal: AbortSignal.timeout(15000),
+    });
+
+    const html = await response.text();
+
+    const lower = html.toLowerCase();
+
+    const positionSpazzamento =
+      lower.indexOf("spazzamento meccanizzato");
+
+    const positionIgiene =
+      lower.indexOf("igiene urbana");
+
+    const positionCasaregis =
+      lower.indexOf("casaregis");
+
+    const positionTorino =
+      lower.indexOf("corso torino");
+
+    const positionTommaseo =
+      lower.indexOf("tommaseo");
+
+    const positionPiave =
+      lower.indexOf("via piave");
+
+    const diagnostic = {
+      diagnosticMode: true,
+
+      message:
+        "Questa risposta serve solo a diagnosticare il contenuto restituito da AMIU a Netlify.",
+
+      requestedUrl: AMIU_URL,
+
+      fetchedUrl: response.url,
+
+      httpStatus: response.status,
+
+      httpStatusText: response.statusText,
+
+      ok: response.ok,
+
+      redirected: response.redirected,
+
+      contentType:
+        response.headers.get("content-type"),
+
+      contentLengthHeader:
+        response.headers.get("content-length"),
+
+      htmlLength: html.length,
+
+      checks: {
+        containsSpazzamentoMeccanizzato:
+          positionSpazzamento >= 0,
+
+        containsIgieneUrbana:
+          positionIgiene >= 0,
+
+        containsCasaregis:
+          positionCasaregis >= 0,
+
+        containsCorsoTorino:
+          positionTorino >= 0,
+
+        containsTommaseo:
+          positionTommaseo >= 0,
+
+        containsViaPiave:
+          positionPiave >= 0,
+      },
+
+      positions: {
+        spazzamentoMeccanizzato:
+          positionSpazzamento,
+
+        igieneUrbana:
+          positionIgiene,
+
+        casaregis:
+          positionCasaregis,
+
+        corsoTorino:
+          positionTorino,
+
+        tommaseo:
+          positionTommaseo,
+
+        viaPiave:
+          positionPiave,
+      },
+
+      beginningOfHtml: html
+        .slice(0, 1500)
+        .replace(/\s+/g, " ")
+        .trim(),
+
+      snippetAroundSpazzamento:
+        makeSnippet(
+          html,
+          positionSpazzamento
+        ),
+
+      snippetAroundCasaregis:
+        makeSnippet(
+          html,
+          positionCasaregis
+        ),
+
+      snippetAroundCorsoTorino:
+        makeSnippet(
+          html,
+          positionTorino
+        ),
+
+      timestamp:
+        new Date().toISOString(),
+    };
+
+    return json(diagnostic);
+  } catch (error) {
+    console.error(
+      "Diagnostica AMIU fallita:",
+      error
+    );
+
+    return json(
+      {
+        diagnosticMode: true,
+
+        error:
+          "Impossibile recuperare la pagina AMIU",
+
+        errorName:
+          error instanceof Error
+            ? error.name
+            : null,
+
+        detail:
+          error instanceof Error
+            ? error.message
+            : String(error),
+
+        source: AMIU_URL,
+
+        timestamp:
+          new Date().toISOString(),
+      },
+      502
+    );
   }
 }
 
-export const config = { path:"/api/amiu" };
+export const config = {
+  path: "/api/amiu",
+};
