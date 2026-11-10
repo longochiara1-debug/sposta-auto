@@ -1,4 +1,4 @@
-const CACHE = "sposta-auto-shell-v1";
+const CACHE = "sposta-auto-shell-v2";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", event => {
@@ -7,9 +7,7 @@ self.addEventListener("install", event => {
 });
 
 self.addEventListener("activate", event => {
-  event.waitUntil(
-    caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key))))
-  );
+  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))));
   self.clients.claim();
 });
 
@@ -17,16 +15,40 @@ self.addEventListener("fetch", event => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
   if (url.pathname.startsWith("/api/")) return;
-
   event.respondWith(
-    fetch(event.request)
-      .then(response => {
-        const copy = response.clone();
-        if (url.origin === self.location.origin && response.ok) {
-          caches.open(CACHE).then(cache => cache.put(event.request, copy));
-        }
-        return response;
-      })
-      .catch(() => caches.match(event.request).then(hit => hit || caches.match("/")))
+    fetch(event.request).then(response => {
+      if (url.origin === self.location.origin && response.ok) {
+        caches.open(CACHE).then(cache => cache.put(event.request, response.clone()));
+      }
+      return response;
+    }).catch(() => caches.match(event.request).then(hit => hit || caches.match("/")))
   );
+});
+
+self.addEventListener("push", event => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch { data = { body: event.data?.text() }; }
+  const title = data.title || "Sposta l’auto";
+  const options = {
+    body: data.body || "Controlla il prossimo spazzamento.",
+    icon: data.icon || "/icon-192.png",
+    badge: data.badge || "/icon-192.png",
+    tag: data.tag || "sposta-auto-reminder",
+    renotify: true,
+    data: { url: data.url || "/" }
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  const target = new URL(event.notification.data?.url || "/", self.location.origin).href;
+  event.waitUntil(clients.matchAll({ type: "window", includeUncontrolled: true }).then(windows => {
+    for (const client of windows) {
+      if (client.url.startsWith(self.location.origin) && "focus" in client) {
+        client.navigate(target); return client.focus();
+      }
+    }
+    return clients.openWindow ? clients.openWindow(target) : undefined;
+  }));
 });
