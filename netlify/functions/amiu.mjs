@@ -1,11 +1,137 @@
-const AMIU_URL="https://www.amiu.genova.it/in-evidenza/cerca-il-tuo-comune/genova/municipio-viii-medio-levante.html";
-const WEEKDAYS={domenica:0,lunedi:1,martedi:2,mercoledi:3,giovedi:4,venerdi:5,sabato:6};
-function decodeHtml(v=""){const e={"&nbsp;":" ","&amp;":"&","&quot;":'"',"&#39;":"'","&apos;":"'","&deg;":"°","&agrave;":"à","&egrave;":"è","&eacute;":"é","&igrave;":"ì","&ograve;":"ò","&ugrave;":"ù"};return v.replace(/&(nbsp|amp|quot|apos|deg|agrave|egrave|eacute|igrave|ograve|ugrave|#39);/gi,m=>e[m.toLowerCase()]||m).replace(/&#(\d+);/g,(_,c)=>String.fromCodePoint(Number(c))).replace(/&#x([0-9a-f]+);/gi,(_,c)=>String.fromCodePoint(parseInt(c,16)))}
-function lines(h){return decodeHtml(h.replace(/<script[\s\S]*?<\/script>/gi," ").replace(/<style[\s\S]*?<\/style>/gi," ").replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/tr)>/gi,"\n").replace(/<[^>]+>/g," ")).split(/\n+/).map(x=>x.replace(/\s+/g," ").trim()).filter(Boolean)}
-const norm=(v="")=>v.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g," ").trim();
-function parseSchedule(s){const n=norm(s),tm=s.match(/(?:dalle|dalle ore)\s*(\d{1,2})[:.](\d{2})\s*(?:alle|alle ore)\s*(\d{1,2})[:.](\d{2})/i),start=tm?`${tm[1].padStart(2,"0")}:${tm[2]}`:"08:00",time=tm?`${start}–${tm[3].padStart(2,"0")}:${tm[4]}`:"Orario da verificare sul cartello",dates=[...s.matchAll(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g)].map(m=>`${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}T${start}`);if(dates.length)return{dates:[...new Set(dates)],time};const r=n.match(/\b([1-5])\s*°?\s*(domenica|lunedi|martedi|mercoledi|giovedi|venerdi|sabato)\b/);return r?{recurrence:{ordinal:Number(r[1]),weekday:WEEKDAYS[r[2]]},time}:null}
-function descriptors(d){const clean=d.replace(/\s+spazzamento meccanizzato.*$/i,"").replace(/:\s*(?:il)?\s*$/i,"").trim(),am=clean.match(/^([^,]+),\s*/),area=am?am[1].trim():"Genova VIII Medio Levante",text=am?clean.slice(am[0].length):clean,out=[],re=/(?:^|,\s*)(via|corso|piazza|viale)\s+([^,(]+?)(?:\s*\(([^)]*)\))?(?=,\s*(?:via|corso|piazza|viale)\s+|$)/gi;for(const m of text.matchAll(re)){const t=m[1][0].toUpperCase()+m[1].slice(1).toLowerCase();out.push({area,street:`${t} ${m[2].trim()}`,segment:(m[3]||"").trim()})}return out}
-function extract(h){const l=lines(h),items=[];for(let i=0;i<l.length;i++){if(!/spazzamento meccanizzato/i.test(l[i]))continue;const p=[];for(let o=1;o<=3&&i+o<l.length;o++){const c=l[i+o];if(/spazzamento meccanizzato/i.test(c))break;p.push(c);if(/\d{1,2}\/\d{1,2}\/\d{4}|[1-5]\s*°?\s*(?:lunedi|martedi|mercoledi|giovedi|venerdi|sabato|domenica)/i.test(norm(c)))break}const s=parseSchedule(p.join(" "));if(s)for(const d of descriptors(l[i]))items.push({...d,...s})}return [...new Map(items.map(x=>[JSON.stringify([x.area,x.street,x.segment,x.dates||x.recurrence,x.time]),x])).values()]}
-const json=(body,status=200,headers={})=>new Response(JSON.stringify(body),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"public, max-age=300, s-maxage=21600, stale-while-revalidate=86400","access-control-allow-origin":"*",...headers}});
-export default async function handler(request){if(request.method==="OPTIONS")return new Response(null,{status:204,headers:{"access-control-allow-origin":"*","access-control-allow-methods":"GET, OPTIONS","access-control-allow-headers":"content-type"}});if(request.method!=="GET")return json({error:"Metodo non consentito"},405,{allow:"GET, OPTIONS"});try{const r=await fetch(AMIU_URL,{headers:{accept:"text/html,application/xhtml+xml","user-agent":"SpostaAuto/1.0 (+Netlify Function)"},signal:AbortSignal.timeout(10000)});if(!r.ok)throw Error(`AMIU ha risposto ${r.status}`);const items=extract(await r.text());if(!items.length)throw Error("Nessun dato riconosciuto: la pagina AMIU potrebbe essere cambiata");return json({source:AMIU_URL,municipality:"Genova VIII Medio Levante",updatedAt:new Date().toISOString(),count:items.length,items})}catch(e){console.error(e);return json({error:"Impossibile aggiornare i dati AMIU",detail:e instanceof Error?e.message:String(e),source:AMIU_URL},502,{"cache-control":"no-store"})}}
-export const config={path:"/api/amiu"};
+const AMIU_URL =
+  "https://www.amiu.genova.it/in-evidenza/cerca-il-tuo-comune/genova/municipio-viii-medio-levante.html";
+
+const SAFE_DATA = [
+  {
+    area: "Foce",
+    street: "Corso Torino",
+    segment: "da Via Tolemaide a Corso Buenos Aires, ambo i lati",
+    recurrence: {
+      ordinal: 2,
+      weekday: 1,
+    },
+    time: "Orario da verificare sul cartello",
+  },
+  {
+    area: "Foce",
+    street: "Piazza Tommaseo",
+    segment: "tratto adiacente Scalinata Borghese",
+    recurrence: {
+      ordinal: 4,
+      weekday: 1,
+    },
+    time: "Orario da verificare sul cartello",
+  },
+  {
+    area: "Foce",
+    street: "Via Casaregis",
+    segment: "da Corso Buenos Aires a Via Pisacane",
+    recurrence: {
+      ordinal: 2,
+      weekday: 5,
+    },
+    time: "Orario da verificare sul cartello",
+  },
+  {
+    area: "Foce",
+    street: "Via Casaregis",
+    segment: "da Via Pisacane a Via Ruspoli",
+    recurrence: {
+      ordinal: 3,
+      weekday: 2,
+    },
+    time: "Orario da verificare sul cartello",
+  },
+  {
+    area: "Foce",
+    street: "Via Casaregis",
+    segment: "da Via Tolemaide a Corso Buenos Aires",
+    recurrence: {
+      ordinal: 4,
+      weekday: 2,
+    },
+    time: "Orario da verificare sul cartello",
+  },
+  {
+    area: "Albaro",
+    street: "Piazza Dunant",
+    segment: "lato monte",
+    recurrence: {
+      ordinal: 2,
+      weekday: 1,
+    },
+    time: "Orario da verificare sul cartello",
+  },
+  {
+    area: "Albaro",
+    street: "Piazza Dunant",
+    segment: "lato mare",
+    recurrence: {
+      ordinal: 2,
+      weekday: 1,
+    },
+    time: "Orario da verificare sul cartello",
+  },
+  {
+    area: "Albaro",
+    street: "Via Piave",
+    segment: "a scendere",
+    recurrence: {
+      ordinal: 4,
+      weekday: 3,
+    },
+    time: "Orario da verificare sul cartello",
+  },
+  {
+    area: "Albaro",
+    street: "Via Piave",
+    segment: "a salire",
+    recurrence: {
+      ordinal: 4,
+      weekday: 5,
+    },
+    time: "Orario da verificare sul cartello",
+  },
+];
+
+function decodeHtml(value = "") {
+  const entities = {
+    "&nbsp;": " ",
+    "&amp;": "&",
+    "&quot;": '"',
+    "&#39;": "'",
+    "&apos;": "'",
+    "&deg;": "°",
+    "&agrave;": "à",
+    "&egrave;": "è",
+    "&eacute;": "é",
+    "&igrave;": "ì",
+    "&ograve;": "ò",
+    "&ugrave;": "ù",
+  };
+
+  return value
+    .replace(
+      /&(nbsp|amp|quot|apos|deg|agrave|egrave|eacute|igrave|ograve|ugrave|#39);/gi,
+      (match) => entities[match.toLowerCase()] || match
+    )
+    .replace(/&#(\d+);/g, (_, code) =>
+      String.fromCodePoint(Number(code))
+    )
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) =>
+      String.fromCodePoint(parseInt(code, 16))
+    );
+}
+
+function htmlToText(html) {
+  return decodeHtml(
+    html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(
+        /<(br|\/p|\/div|\/li|\/h[1-6]|\/tr|\/td|\/th)>/gi,
+        "\n"
+      )
+      .replace(/<[^>]+>/g, " ")
+  )
+  
